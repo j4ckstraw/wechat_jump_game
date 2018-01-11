@@ -46,12 +46,12 @@ def check_screenshot():
         except Exception:
             pass
     if SCREENSHOT_WAY < 0:
-        print('暂不支持当前设备')
+        print(u'暂不支持当前设备')
         sys.exit()
     pull_screenshot()
     try:
         Image.open('./autojump.png').load()
-        print('采用方式 {} 获取截图'.format(SCREENSHOT_WAY))
+        print(u'采用方式 {} 获取截图'.format(SCREENSHOT_WAY))
     except Exception:
         SCREENSHOT_WAY -= 1
         check_screenshot()

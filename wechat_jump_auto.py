@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 """
@@ -21,18 +22,19 @@ import sys
 import time
 import math
 import random
+import json
 from PIL import Image
 from six.moves import input
 try:
     from common import debug, config, screenshot
 except Exception as ex:
     print(ex)
-    print('请将脚本放在项目根目录中运行')
-    print('请检查项目根目录中的 common 文件夹是否存在')
+    print(u'请将脚本放在项目根目录中运行')
+    print(u'请检查项目根目录中的 common 文件夹是否存在')
     exit(-1)
 
 
-VERSION = "1.1.1"
+VERSION = "1.2.1"
 
 # DEBUG 开关，需要调试的时候请改为 True，不需要调试的时候为 False
 DEBUG_SWITCH = False
@@ -49,6 +51,22 @@ piece_base_height_1_2 = config['piece_base_height_1_2']
 # 棋子的宽度，比截图中量到的稍微大一点比较安全，可能要调节
 piece_body_width = config['piece_body_width']
 
+last_distance = 0
+last_time = 0
+
+policy_file = "policy.json"
+pol = None
+try:
+    pol = open(policy_file,'r')
+    policy = json.load(pol)
+except Exception as e:
+    print(e)
+    policy = {}
+finally:
+    if pol:
+        pol.close()
+    print(policy)
+    print(len(policy))
 
 def set_button_position(im):
     """
@@ -67,9 +85,29 @@ def jump(distance):
     """
     跳跃一定的距离
     """
-    press_time = distance * press_coefficient
+    # press_time = distance * press_coefficient
+    press_time = distance*1.403+25.0473
     press_time = max(press_time, 200)   # 设置 200ms 是最小的按压时间
     press_time = int(press_time)
+    ####################choose policy ####################
+    global policy
+    if distance < 300 and not policy.has_key(str(int(round(distance)))):
+        print("add random")
+        press_time = press_time + random.random()*50
+        press_time = int(press_time)
+    elif distance > 700 and not policy.has_key(str(int(round(distance)))):
+        print("sub random")
+        press_time = press_time - random.random()*50
+        press_time = int(press_time)
+    elif policy.has_key(str(int(round(distance)))):
+        print("\033[31;1m match policy \033[0m")
+        press_time = policy[str(int(round(distance)))]
+        press_time = int(press_time)
+        if random.random()*10 < 1 and distance > 400:                         ## explore policy
+            print("\033[32;1m exploring \033[0m")
+            press_time = press_time-random.random()*100
+            press_time = int(press_time)
+    ############## end choose policy #####################
     cmd = 'adb shell input swipe {x1} {y1} {x2} {y2} {duration}'.format(
         x1=swipe_x1,
         y1=swipe_y1,
@@ -77,17 +115,30 @@ def jump(distance):
         y2=swipe_y2,
         duration=press_time
     )
-    print(cmd)
+    # print(cmd)
+    ################### when failed save policy ###########################
+    if distance == 0:
+        print("\033[32m  write policy to file \033[0m")
+        try:
+            pol = open(policy_file,'w')
+            print(policy)
+            print(len(policy))
+            json.dump(policy,pol,indent=4,sort_keys=True)
+        except Exception as e:
+            print(e)
+            # policy = {}
+        finally:
+            if pol:
+                pol.close()
+    ################### end when failed save policy ###########################
     os.system(cmd)
     return press_time
-
 
 def find_piece_and_board(im):
     """
     寻找关键坐标
     """
     w, h = im.size
-
     piece_x_sum = 0
     piece_x_c = 0
     piece_y_max = 0
@@ -102,12 +153,15 @@ def find_piece_and_board(im):
         for j in range(1, w):
             pixel = im_pixel[j, i]
             # 不是纯色的线，则记录 scan_start_y 的值，准备跳出循环
-            if pixel != last_pixel:
+            # if pixel != last_pixel:
+            if abs(pixel[0] - last_pixel[0]) \
+                    + abs(pixel[1] - last_pixel[1]) \
+                    + abs(pixel[2] - last_pixel[2]) > 10:
                 scan_start_y = i - 50
                 break
         if scan_start_y:
             break
-    print('scan_start_y: {}'.format(scan_start_y))
+    # print('scan_start_y: {}'.format(scan_start_y))
 
     # 从 scan_start_y 开始往下扫描，棋子应位于屏幕上半部分，这里暂定不超过 2/3
     for i in range(scan_start_y, int(h * 2 / 3)):
@@ -142,7 +196,6 @@ def find_piece_and_board(im):
             break
         board_x_sum = 0
         board_x_c = 0
-
         for j in range(int(board_x_start), int(board_x_end)):
             pixel = im_pixel[j, i]
             # 修掉脑袋比下一个小格子还高的情况的 bug
@@ -178,7 +231,14 @@ def find_piece_and_board(im):
         pixel = im_pixel[board_x, j]
         if abs(pixel[0] - 245) + abs(pixel[1] - 245) + abs(pixel[2] - 245) == 0:
             board_y = j + 10
+            ########################################## update policy   #############################
+            global policy
+            global last_time
+            print('good job, update policy')
+            policy[last_distance] = last_time
+            ########################################## end update policy   #########################
             break
+
 
     if not all((board_x, board_y)):
         return 0, 0, 0, 0
@@ -190,8 +250,7 @@ def yes_or_no(prompt, true_value='y', false_value='n', default=True):
     检查是否已经为启动程序做好了准备
     """
     default_value = true_value if default else false_value
-    prompt = '{} {}/{} [{}]: '.format(prompt, true_value,
-        false_value, default_value)
+    prompt = u'{} {}/{} [{}]: '.format(prompt, true_value, false_value, default_value)
     i = input(prompt)
     if not i:
         return default
@@ -208,12 +267,12 @@ def main():
     """
     主函数
     """
-    op = yes_or_no('请确保手机打开了 ADB 并连接了电脑，'
-                   '然后打开跳一跳并【开始游戏】后再用本程序，确定开始？')
+    #op = yes_or_no(u'请确保手机打开了 ADB 并连接了电脑,然后打开跳一跳并【开始游戏】后再用本程序，确定开始？')
+    op = yes_or_no('Please ensure that adb is opened.')
     if not op:
         print('bye')
         return
-    print('程序版本号：{}'.format(VERSION))
+    print(u'程序版本号：{}'.format(VERSION))
     debug.dump_device_info()
     screenshot.check_screenshot()
 
@@ -225,26 +284,31 @@ def main():
         # 获取棋子和 board 的位置
         piece_x, piece_y, board_x, board_y = find_piece_and_board(im)
         ts = int(time.time())
-        print(ts, piece_x, piece_y, board_x, board_y)
+        # print(ts, piece_x, piece_y, board_x, board_y)
         set_button_position(im)
-        jump(math.sqrt((board_x - piece_x) ** 2 + (board_y - piece_y) ** 2))
+        global last_distance 
+        global last_time
+        print("\033[34;1m [-] ",last_distance,last_time,"\033[0m")
+        distance = math.sqrt((board_x - piece_x) ** 2 + (board_y - piece_y) ** 2)
+        last_distance = int(round(distance))
+        last_time = jump(distance)
+        
         if DEBUG_SWITCH:
-            debug.save_debug_screenshot(ts, im, piece_x,
-                                        piece_y, board_x, board_y)
+            debug.save_debug_screenshot(ts, im, piece_x,piece_y, board_x, board_y)
             debug.backup_screenshot(ts)
         im.close()
         i += 1
-        if i == next_rest:
-            print('已经连续打了 {} 下，休息 {}s'.format(i, next_rest_time))
-            for j in range(next_rest_time):
-                sys.stdout.write('\r程序将在 {}s 后继续'.format(next_rest_time - j))
-                sys.stdout.flush()
-                time.sleep(1)
-            print('\n继续')
-            i, next_rest, next_rest_time = (0, random.randrange(30, 100),
-                                            random.randrange(10, 60))
+        # if i == next_rest:
+        #     print(u'已经连续打了 {} 下，休息 {}s'.format(i, next_rest_time))
+        #     for j in range(next_rest_time):
+        #         sys.stdout.write(u'\r程序将在 {}s 后继续'.format(next_rest_time - j))
+        #         sys.stdout.flush()
+        #         time.sleep(1)
+        #     print(u'\n继续')
+        #     i, next_rest, next_rest_time = (0, random.randrange(30, 100),
+        #                                     random.randrange(10, 20))
         # 为了保证截图的时候应落稳了，多延迟一会儿，随机值防 ban
-        time.sleep(random.uniform(0.9, 1.2))
+        time.sleep(random.uniform(0.8, 1.3))
 
 
 if __name__ == '__main__':
